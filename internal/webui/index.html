@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>雷神加速器 · 运行状态</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121821; --panel2:#0f151d; --line:#1f2937;
+    --txt:#e6edf3; --dim:#8b98a9; --acc:#22d3ee; --ok:#34d399;
+    --warn:#fbbf24; --bad:#f87171; --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:radial-gradient(1200px 600px at 20% -10%,#16222e 0%,var(--bg) 55%);
+    color:var(--txt);font:14px/1.5 system-ui,-apple-system,"Noto Sans SC",sans-serif;
+    padding:22px;min-height:100vh;
+  }
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+  h1{font-size:17px;margin:0;letter-spacing:.06em;font-weight:600}
+  h1 span{color:var(--dim);font-weight:400;font-size:12px;letter-spacing:.02em;margin-left:8px}
+  .badge{
+    display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;
+    font-size:12px;font-weight:600;border:1px solid var(--line);background:var(--panel);
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}
+  .dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+  .dot.warn{background:var(--warn);box-shadow:0 0 8px var(--warn)}
+  .dot.off{background:var(--bad);box-shadow:0 0 8px var(--bad)}
+  .spacer{flex:1}
+  .muted{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
+
+  .grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));margin-bottom:14px}
+  .card{
+    background:linear-gradient(180deg,var(--panel) 0%,var(--panel2) 100%);
+    border:1px solid var(--line);border-radius:12px;padding:13px 15px;
+    position:relative;overflow:hidden;
+  }
+  .card::after{
+    content:"";position:absolute;inset:0 auto 0 0;width:3px;background:var(--line);
+  }
+  .card.ok::after{background:var(--ok)}
+  .card.acc::after{background:var(--acc)}
+  .card.warn::after{background:var(--warn)}
+  .card.bad::after{background:var(--bad)}
+  .label{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);margin-bottom:6px}
+  .value{font:600 22px/1.15 var(--mono);font-variant-numeric:tabular-nums;word-break:break-all}
+  .value.sm{font-size:14px}
+  .sub{font-size:11px;color:var(--dim);margin-top:5px;font-family:var(--mono)}
+
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+  .panel h2{margin:0 0 12px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--dim);font-weight:600}
+  .cols{display:grid;gap:14px;grid-template-columns:1fr 1fr}
+  @media(max-width:880px){.cols{grid-template-columns:1fr}}
+
+  .row{display:flex;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px dashed #1b2430;font-size:13px}
+  .row:last-child{border-bottom:0}
+  .row .k{color:var(--dim)}
+  .row .v{font-family:var(--mono);text-align:right;word-break:break-all}
+  .v.ok{color:var(--ok)} .v.bad{color:var(--bad)} .v.warn{color:var(--warn)} .v.acc{color:var(--acc)}
+
+  canvas{width:100%;height:132px;display:block;border-radius:8px;background:#0a0e13}
+
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th{text-align:left;color:var(--dim);font-weight:500;font-size:11px;letter-spacing:.08em;text-transform:uppercase;padding:6px 8px;border-bottom:1px solid var(--line)}
+  td{padding:6px 8px;border-bottom:1px solid #161e28;font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+  tr:hover td{background:#141b25}
+  .tag{display:inline-block;padding:1px 7px;border-radius:5px;font-size:11px;font-weight:600}
+  .tag.acc{background:rgba(34,211,238,.14);color:var(--acc);border:1px solid rgba(34,211,238,.35)}
+  .tag.dir{background:rgba(139,152,169,.12);color:var(--dim);border:1px solid #2a3644}
+  .empty{color:var(--dim);font-size:12px;padding:10px 2px}
+  footer{color:var(--dim);font-size:11px;font-family:var(--mono);margin-top:6px;text-align:center}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>雷神加速器 <span>leigod-isolated</span></h1>
+  <span class="badge" id="svcBadge"><i class="dot"></i><span id="svcText">连接中…</span></span>
+  <span class="badge" id="accBadge"><i class="dot"></i><span id="accText">加速状态未知</span></span>
+  <div class="spacer"></div>
+  <span class="muted" id="updated">—</span>
+</header>
+
+<div class="grid">
+  <div class="card acc" id="cDelay">
+    <div class="label">隧道延迟</div>
+    <div class="value" id="delay">—</div>
+    <div class="sub" id="delaySub">等待心跳</div>
+  </div>
+  <div class="card" id="cLoss">
+    <div class="label">丢包率</div>
+    <div class="value" id="loss">—</div>
+    <div class="sub" id="lossSub">—</div>
+  </div>
+  <div class="card" id="cNode">
+    <div class="label">加速节点</div>
+    <div class="value sm" id="node">—</div>
+    <div class="sub" id="nodeSub">—</div>
+  </div>
+  <div class="card ok" id="cAcc">
+    <div class="label">加速命中</div>
+    <div class="value" id="accHits">0</div>
+    <div class="sub" id="accSub">直连 0</div>
+  </div>
+  <div class="card" id="cDev">
+    <div class="label">设备身份</div>
+    <div class="value sm" id="mac">—</div>
+    <div class="sub" id="devSub">—</div>
+  </div>
+  <div class="card" id="cGame">
+    <div class="label">游戏进程</div>
+    <div class="value" id="gameVal">—</div>
+    <div class="sub" id="gameSub">—</div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>延迟曲线（最近心跳）</h2>
+  <canvas id="chart"></canvas>
+</div>
+
+<div class="cols">
+  <div class="panel">
+    <h2>隔离与路由</h2>
+    <div class="row"><span class="k">网络命名空间</span><span class="v" id="rNs">—</span></div>
+    <div class="row"><span class="k">加速网卡</span><span class="v" id="rTun">—</span></div>
+    <div class="row"><span class="k">物理网卡（绕代理）</span><span class="v" id="rWan">—</span></div>
+    <div class="row"><span class="k">宿主机 mangle 隔离</span><span class="v ok" id="rClean">已验证</span></div>
+    <div class="row"><span class="k">Steam API 初始化</span><span class="v" id="rSteamApi">—</span></div>
+    <div class="row"><span class="k">游戏实例服务器</span><span class="v" id="rInst">—</span></div>
+  </div>
+  <div class="panel">
+    <h2>服务与端口</h2>
+    <div class="row"><span class="k">systemd 服务</span><span class="v" id="sSvc">—</span></div>
+    <div class="row"><span class="k">守护/加速进程</span><span class="v" id="sProc">—</span></div>
+    <div class="row"><span class="k">手机 App 绑定</span><span class="v" id="sBind">—</span></div>
+    <div class="row"><span class="k">SOCKS5 (Throne 分流)</span><span class="v" id="sSocks">—</span></div>
+    <div class="row"><span class="k">Steam IPC 桥</span><span class="v" id="sBridge">—</span></div>
+    <div class="row"><span class="k">日志</span><span class="v" id="sLog">—</span></div>
+  </div>
+</div>
+
+<div class="panel">
+  <h2>最近连接</h2>
+  <table>
+    <thead><tr><th>时间</th><th>类型</th><th>域名</th><th>目标</th><th>节点</th></tr></thead>
+    <tbody id="connBody"><tr><td colspan="5" class="empty">暂无连接记录</td></tr></tbody>
+  </table>
+</div>
+
+<footer>只读面板 · 每 1.5s 刷新 · 数据来源 /opt/leigod/runtime/log/acc_PC.log</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+let timer = null, prevAcc = -1, prevDelay = [];
+
+function esc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function setCard(id, cls){
+  const el = $(id);
+  el.classList.remove('ok','acc','warn','bad');
+  if (cls) el.classList.add(cls);
+}
+function setRow(id, text, cls){
+  const el = $(id);
+  el.textContent = text;
+  el.className = 'v' + (cls ? ' ' + cls : '');
+}
+
+function drawChart(samples){
+  const cv = $('chart');
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w*dpr || cv.height !== h*dpr){
+    cv.width = w*dpr; cv.height = h*dpr;
+  }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,w,h);
+
+  if (!samples || samples.length < 2){
+    ctx.fillStyle = '#4b5563';
+    ctx.font = '12px ui-monospace, monospace';
+    ctx.fillText('数据不足，等待心跳…', 12, h/2);
+    return;
+  }
+
+  const pad = {l:36, r:12, t:12, b:18};
+  const vals = samples.map(s => s.delay);
+  // 用 P90 作为量程参考，避免偶发尖峰把正常区间压成直线
+  const sorted = [...vals].sort((a,b) => a-b);
+  const p90 = sorted[Math.min(sorted.length-1, Math.floor(sorted.length*0.9))] || sorted[sorted.length-1];
+  const rawMax = Math.max(...vals);
+  const rawMin = Math.min(...vals);
+  let max = Math.min(rawMax, Math.max(p90 * 1.6, rawMin * 2 + 12, 20));
+  let min = Math.max(0, Math.min(rawMin, p90) - 6);
+  if (max <= min) max = min + 10;
+
+  const X = i => pad.l + (w-pad.l-pad.r) * (i/(samples.length-1));
+  const clampY = y => Math.max(pad.t-2, Math.min(h-pad.b, y));
+  const Y = v => clampY(pad.t + (h-pad.t-pad.b) * (1 - (v-min)/(max-min)));
+
+  // 网格
+  ctx.strokeStyle = '#18212c'; ctx.lineWidth = 1;
+  ctx.font = '10px ui-monospace, monospace'; ctx.fillStyle = '#546070';
+  for (let g=0; g<=3; g++){
+    const v = min + (max-min)*g/3, y = Y(v);
+    ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(w-pad.r, y); ctx.stroke();
+    ctx.fillText(Math.round(v)+'ms', 2, y+3);
+  }
+
+  // 超量程尖峰标记（被钳制在图顶）
+  const clipped = vals.filter(v => v > max).length;
+
+  // 面积
+  const grad = ctx.createLinearGradient(0, pad.t, 0, h-pad.b);
+  grad.addColorStop(0, 'rgba(34,211,238,.30)');
+  grad.addColorStop(1, 'rgba(34,211,238,0)');
+  ctx.beginPath(); ctx.moveTo(X(0), Y(vals[0]));
+  for (let i=1;i<vals.length;i++) ctx.lineTo(X(i), Y(vals[i]));
+  ctx.lineTo(X(vals.length-1), h-pad.b); ctx.lineTo(X(0), h-pad.b); ctx.closePath();
+  ctx.fillStyle = grad; ctx.fill();
+
+  // 折线
+  ctx.beginPath(); ctx.moveTo(X(0), Y(vals[0]));
+  for (let i=1;i<vals.length;i++) ctx.lineTo(X(i), Y(vals[i]));
+  ctx.strokeStyle = '#22d3ee'; ctx.lineWidth = 1.8; ctx.lineJoin='round'; ctx.stroke();
+
+  // 末点
+  const lx = X(vals.length-1), ly = Y(vals[vals.length-1]);
+  ctx.beginPath(); ctx.arc(lx, ly, 3.2, 0, Math.PI*2);
+  ctx.fillStyle = '#22d3ee'; ctx.fill();
+  ctx.beginPath(); ctx.arc(lx, ly, 6.5, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(34,211,238,.35)'; ctx.stroke();
+
+  // 区域文字
+  ctx.fillStyle = '#546070';
+  let tail = 'min ' + rawMin + 'ms · max ' + rawMax + 'ms · avg ' + Math.round(vals.reduce((a,b)=>a+b,0)/vals.length) + 'ms';
+  if (clipped) tail += ' · ' + clipped + ' 个尖峰超出量程';
+  ctx.fillText(tail, pad.l, h-4);
+}
+
+function render(d){
+  window.__last = d.history || [];
+  // header
+  const svcOn = d.service.active;
+  $('svcBadge').querySelector('.dot').className = 'dot ' + (svcOn ? 'on' : 'off');
+  $('svcText').textContent = svcOn ? '服务运行中' : '服务已停止';
+
+  const tun = d.tunnel || {};
+  const accOn = !!tun.active;
+  $('accBadge').querySelector('.dot').className = 'dot ' + (accOn ? 'on' : 'warn');
+  $('accText').textContent = accOn ? '正在加速' : '未加速（手机 App 未开启）';
+  $('updated').textContent = d.now || '—';
+
+  // 延迟
+  const dl = tun.delay_ms || 0;
+  $('delay').textContent = accOn && dl ? dl + ' ms' : '—';
+  $('delaySub').textContent = tun.last_beat ? ('心跳 ' + tun.last_beat + (tun.beat_fresh ? ' · 实时' : ' · 陈旧')) : '等待心跳';
+  setCard('cDelay', !accOn ? '' : (dl === 0 ? '' : (dl < 80 ? 'acc' : (dl < 150 ? 'warn' : 'bad'))));
+
+  // 丢包
+  const loss = tun.loss_pct || 0;
+  $('loss').textContent = accOn ? loss + ' %' : '—';
+  $('lossSub').textContent = tun.records ? ('心跳样本 ' + tun.records) : '—';
+  setCard('cLoss', !accOn ? '' : (loss === 0 ? 'ok' : (loss < 5 ? 'warn' : 'bad')));
+
+  // 节点
+  $('node').textContent = tun.node || '—';
+  $('nodeSub').textContent = tun.node ? '雷神中转节点' : '未连接';
+
+  // 命中
+  const tr = d.traffic || {};
+  $('accHits').textContent = tr.acc_hits || 0;
+  $('accSub').textContent = '直连 ' + (tr.direct_hits || 0);
+  setCard('cAcc', (tr.acc_hits || 0) > 0 ? 'ok' : '');
+
+  // 设备
+  $('mac').textContent = d.device.mac || '需 root 查看';
+  $('devSub').textContent = (d.device.bound ? '已绑定' : '未绑定') + (d.device.lan_ip ? ' · ' + d.device.lan_ip : '');
+  setCard('cDev', d.device.bound ? 'ok' : 'warn');
+
+  // 游戏
+  const g = d.game || {};
+  if (!g.total){
+    $('gameVal').textContent = '未运行';
+    $('gameSub').textContent = 'Path of Exile';
+    setCard('cGame', '');
+  } else {
+    $('gameVal').textContent = g.in_ns + '/' + g.total;
+    $('gameSub').textContent = g.in_ns > 0 ? '进程已在隔离命名空间内' : '进程未进入命名空间';
+    setCard('cGame', g.in_ns > 0 ? 'ok' : 'bad');
+  }
+
+  // 路由面板
+  const ns = d.namespace || {};
+  setRow('rNs', ns.name + (ns.exists ? ' · 已创建' : ' · 缺失'), ns.exists ? 'ok' : 'bad');
+  setRow('rTun', ns.tun ? ns.tun + ' · 运行中' : (ns.acc_running ? '运行中（需 root 查看网卡名）' : '未创建'), ns.acc_running ? 'ok' : '');
+  const w = d.wan || {};
+  setRow('rWan', w.iface ? (w.iface + ' → ' + (w.gateway||'?') + ' (table ' + w.table + ')') : '—', w.bypass ? 'ok' : 'bad');
+  if (w.iface && !w.bypass) $('rWan').textContent += ' · 走了代理网卡';
+  setRow('rSteamApi', g.total ? (g.steamapi_ok ? '正常' : '失败') : '未启动游戏', g.total ? (g.steamapi_ok ? 'ok' : 'bad') : '');
+  setRow('rInst', g.instance || '—', g.instance ? 'acc' : '');
+
+  // 服务面板
+  setRow('sSvc', d.service.name + (d.service.enabled ? ' · 开机自启' : ' · 未设自启'), d.service.active ? 'ok' : 'bad');
+  setRow('sProc', (ns.daemon_running ? '守护✓ ' : '守护✗ ') + (ns.acc_running ? '加速✓' : '加速✗'),
+         ns.daemon_running && ns.acc_running ? 'ok' : (ns.daemon_running ? 'warn' : 'bad'));
+  setRow('sBind', d.device.bound ? '已绑定' : '未绑定', d.device.bound ? 'ok' : 'warn');
+  const p = d.ports || {};
+  setRow('sSocks', p.socks ? '127.0.0.1:15588 监听中' : '未监听', p.socks ? 'ok' : 'bad');
+  setRow('sBridge', (p.steam_host ? '客户端✓ ' : '客户端✗ ') + (p.steam_bridge ? '桥✓' : '桥✗'),
+         p.steam_host && p.steam_bridge ? 'ok' : 'warn');
+  setRow('sLog', d.log_error ? ('读取失败: ' + d.log_error) : d.log_path, d.log_error ? 'bad' : '');
+
+  // 曲线
+  drawChart(d.history || []);
+
+  // 连接表
+  const rows = (d.recent || []).slice(0, 40);
+  const tb = $('connBody');
+  if (!rows.length){
+    tb.innerHTML = '<tr><td colspan="5" class="empty">暂无连接记录</td></tr>';
+  } else {
+    tb.innerHTML = rows.map(r => `<tr>
+      <td>${esc((r.time||'').slice(11))}</td>
+      <td><span class="tag ${r.acc?'acc':'dir'}">${r.acc?'加速':'直连'}</span></td>
+      <td title="${esc(r.domain)}">${esc(r.domain||'—')}</td>
+      <td>${esc(r.dest)}</td>
+      <td>${esc(r.node)}</td>
+    </tr>`).join('');
+  }
+}
+
+async function tick(){
+  try{
+    const res = await fetch('/api/status', {cache:'no-store'});
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    render(await res.json());
+  }catch(e){
+    $('svcText').textContent = '面板连接失败';
+    $('svcBadge').querySelector('.dot').className = 'dot off';
+    $('updated').textContent = String(e.message || e);
+  }
+}
+
+function start(){ if (timer) return; tick(); timer = setInterval(tick, 1500); }
+function stop(){ if (timer) { clearInterval(timer); timer = null; } }
+
+document.addEventListener('visibilitychange', () => document.hidden ? stop() : start());
+window.addEventListener('resize', () => { if (window.__last) drawChart(window.__last); });
+
+start();
+</script>
+</body>
+</html>
