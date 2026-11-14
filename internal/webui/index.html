@@ -113,6 +113,11 @@
     <div class="value" id="gameVal">—</div>
     <div class="sub" id="gameSub">—</div>
   </div>
+  <div class="card" id="cGameRTT">
+    <div class="label">游戏链路延迟</div>
+    <div class="value" id="grttVal">—</div>
+    <div class="sub" id="grttSub">—</div>
+  </div>
 </div>
 
 <div class="panel">
@@ -139,6 +144,15 @@
     <div class="row"><span class="k">Steam IPC 桥</span><span class="v" id="sBridge">—</span></div>
     <div class="row"><span class="k">日志</span><span class="v" id="sLog">—</span></div>
   </div>
+</div>
+
+<div class="panel">
+  <h2>游戏连接 · 真实 TCP RTT（来自命名空间内 ss -tin）</h2>
+  <table>
+    <thead><tr><th>角色</th><th>类型</th><th>对端</th><th>RTT</th><th>minRTT</th><th>重传</th><th>未确认</th><th>发送队列</th><th>进程</th></tr></thead>
+    <tbody id="rttBody"><tr><td colspan="9" class="empty">未发现游戏链路</td></tr></tbody>
+  </table>
+  <div class="sub" id="rttNote" style="margin-top:8px"></div>
 </div>
 
 <div class="panel">
@@ -293,6 +307,51 @@ function render(d){
     $('gameSub').textContent = g.in_ns > 0 ? '进程已在隔离命名空间内' : '进程未进入命名空间';
     setCard('cGame', g.in_ns > 0 ? 'ok' : 'bad');
   }
+
+  // 游戏链路延迟（middleware 侧 = acc-gw 自己发出的连接，代表真实链路）
+  const gr = d.game_rtt || {};
+  const rtts = (gr.conns || []).filter(c => c.role === 'middleware' && (c.kind === 'game_server' || c.kind === 'leigod_node'));
+  const gsConns = rtts.filter(c => c.kind === 'game_server');
+  const nodeConns = rtts.filter(c => c.kind === 'leigod_node');
+  const pick = gsConns.length ? gsConns : nodeConns;
+  if (pick.length) {
+    const worst = pick.reduce((a, b) => a.rtt_ms > b.rtt_ms ? a : b);
+    // 基线取"真实路径"那条：minrtt 最大的（0 的是本地代理腿，不代表链路）
+    const minBase = Math.max(...pick.map(c => c.min_rtt_ms || c.rtt_ms));
+    $('grttVal').textContent = Math.round(worst.rtt_ms) + ' ms';
+    const isDirect = gsConns.length > 0;
+    $('grttSub').textContent = (isDirect ? '直连（未加速）' : '经雷神节点')
+      + ' · 基线 ' + Math.round(minBase) + 'ms'
+      + (gr.retrans ? ' · 重传 ' + gr.retrans : '');
+    setCard('cGameRTT', isDirect ? 'bad' : (worst.rtt_ms < 80 ? 'ok' : 'warn'));
+  } else {
+    $('grttVal').textContent = '—';
+    $('grttSub').textContent = gr.note || '无游戏连接';
+    setCard('cGameRTT', '');
+  }
+
+  // RTT 明细表
+  const rttRows = (gr.conns || []).filter(c => c.kind === 'game_server' || c.kind === 'leigod_node');
+  const rb = $('rttBody');
+  if (!rttRows.length) {
+    rb.innerHTML = '<tr><td colspan="9" class="empty">未发现游戏链路</td></tr>';
+  } else {
+    rb.innerHTML = rttRows.map(c => {
+      const isNode = c.kind === 'leigod_node';
+      return `<tr>
+        <td>${c.role === 'game' ? '游戏进程' : 'acc-gw'}</td>
+        <td><span class="tag ${isNode ? 'acc' : 'dir'}">${isNode ? '雷神节点' : '直连服务器'}</span></td>
+        <td>${esc(c.peer)}</td>
+        <td style="color:${c.rtt_ms > 150 ? 'var(--bad)' : (c.rtt_ms > 70 ? 'var(--warn)' : 'var(--ok)')}">${c.rtt_ms.toFixed(1)}</td>
+        <td>${c.min_rtt_ms ? c.min_rtt_ms.toFixed(1) : '—'}</td>
+        <td>${c.retrans}</td>
+        <td>${c.unacked}</td>
+        <td>${c.send_q}</td>
+        <td>${esc(c.proc || '—')}</td>
+      </tr>`;
+    }).join('');
+  }
+  $('rttNote').textContent = gr.note ? ('说明: ' + gr.note) : 'acc-gw 行 = 雷神中间件自己发出的连接，代表真实网络链路；游戏进程行 = 游戏自身 socket（加速时被本地代理，数值会接近 0）。';
 
   // 路由面板
   const ns = d.namespace || {};

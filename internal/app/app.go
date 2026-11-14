@@ -13,6 +13,7 @@ import (
 
 	"leigod/internal/assets"
 	"leigod/internal/config"
+	"leigod/internal/monitor"
 	"leigod/internal/netns"
 )
 
@@ -224,6 +225,37 @@ func (a *App) Status() error {
 	}
 	fmt.Fprintf(a.Out, "Throne/Sing-box SOCKS5  : %s (or direct %s)\n", a.Cfg.Socks5Listen, a.Cfg.NSSocks5Listen)
 	fmt.Fprintf(a.Out, "Steam Launch Option     : leigod run -- %%command%%\n")
+
+	mon := monitor.New(monitor.Config{
+		LogPath:     paths.LogDir + "/acc_PC.log",
+		Namespace:   a.Cfg.Namespace,
+		ServiceName: ServiceName,
+		RouteTable:  a.Cfg.RouteTable,
+		InstallDir:  a.Cfg.InstallDir,
+		StateDir:    a.Cfg.StateDir,
+		WebPort:     a.Cfg.WebPort,
+		WebListen:   a.Cfg.WebListen,
+	})
+	snap := mon.Snapshot()
+	gr := snap.GameRTT
+	fmt.Fprintf(a.Out, "\n游戏链路真实 RTT (TCP):\n")
+	if !gr.Available || (gr.AccCount == 0 && gr.DirCount == 0) {
+		fmt.Fprintf(a.Out, "  (无) %s\n", gr.Note)
+	} else {
+		fmt.Fprintf(a.Out, "  最差 %.1fms  最好 %.1fms  平均 %.1fms  加速 %d 条 / 直连 %d 条\n",
+			gr.WorstMs, gr.BestMs, gr.AvgMs, gr.AccCount, gr.DirCount)
+		for _, c := range gr.Conns {
+			if c.Role != "middleware" || (c.Kind != "game_server" && c.Kind != "leigod_node") {
+				continue
+			}
+			kind := "直连服务器"
+			if c.Kind == "leigod_node" {
+				kind = "雷神节点"
+			}
+			fmt.Fprintf(a.Out, "    %-24s %-12s rtt=%6.1fms minrtt=%6.1fms retrans=%d unacked=%d\n",
+				c.Peer, kind, c.RTTms, c.MinRTTms, c.Retrans, c.Unacked)
+		}
+	}
 	return nil
 }
 

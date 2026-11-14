@@ -45,6 +45,36 @@ type Conn struct {
 	Acc    bool   `json:"acc"`
 }
 
+// ConnRTT 是命名空间内一条 TCP 连接的真实 RTT（来自 ss -tin）。
+type ConnRTT struct {
+	Peer     string  `json:"peer"`
+	Local    string  `json:"local"`
+	RTTms    float64 `json:"rtt_ms"`
+	MinRTTms float64 `json:"min_rtt_ms"`
+	Retrans  int     `json:"retrans"`
+	Unacked  int     `json:"unacked"`
+	SendQ    int     `json:"send_q"`
+	RecvQ    int     `json:"recv_q"`
+	Game     bool    `json:"game"`
+	Acc      bool    `json:"acc"`
+	Role     string  `json:"role"` // game（游戏进程自己）/ middleware（acc-gw）
+	Kind     string  `json:"kind"` // game_server / leigod_node / other
+	Proc     string  `json:"proc"`
+}
+
+// GameRTT 是游戏连接延迟汇总。
+type GameRTT struct {
+	Conns     []ConnRTT `json:"conns"`
+	WorstMs   float64   `json:"worst_ms"`
+	BestMs    float64   `json:"best_ms"`
+	AvgMs     float64   `json:"avg_ms"`
+	AccCount  int       `json:"acc_count"`
+	DirCount  int       `json:"dir_count"`
+	Retrans   int       `json:"retrans"`
+	Available bool      `json:"available"`
+	Note      string    `json:"note"`
+}
+
 // Config 是采集器的配置。
 type Config struct {
 	LogPath     string
@@ -74,12 +104,13 @@ type Monitor struct {
 	dirHits  int64
 	history  []Sample
 	recent   []Conn
+	accState map[string]bool // "ip:port" -> 是否走加速（来自日志 is_acc）
 	lastErr  string
 }
 
 // New 创建一个采集器。
 func New(cfg Config) *Monitor {
-	return &Monitor{Cfg: cfg}
+	return &Monitor{Cfg: cfg, accState: map[string]bool{}}
 }
 
 // Poll 增量读取日志并更新统计。
@@ -199,6 +230,7 @@ func (m *Monitor) parseLine(line []byte) {
 
 	if mm := connRe.FindStringSubmatch(s); len(mm) == 6 {
 		isAcc := mm[4] == "1"
+		m.accState[mm[2]] = isAcc
 		if isAcc || len(m.recent) < maxRecent {
 			m.recent = append([]Conn{{
 				Time:   ts,
@@ -252,6 +284,7 @@ type Snapshot struct {
 	Tunnel     TunnelInfo  `json:"tunnel"`
 	Traffic    TrafficInfo `json:"traffic"`
 	Game       GameInfo    `json:"game"`
+	GameRTT    GameRTT     `json:"game_rtt"`
 	Ports      PortsInfo   `json:"ports"`
 	History    []Sample    `json:"history"`
 	Recent     []Conn      `json:"recent"`
@@ -391,6 +424,7 @@ func (m *Monitor) Snapshot() Snapshot {
 	snap.Traffic = TrafficInfo{AccHits: accHits, DirectHits: dirHits}
 
 	snap.Game = m.detectGame()
+	snap.GameRTT = m.detectGameRTT(snap.Game)
 
 	listen := listenPorts()
 	snap.Ports = PortsInfo{
