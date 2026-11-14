@@ -23,6 +23,9 @@ type WSGuardProxy struct {
 	SniffTimeout time.Duration
 	DialTimeout  time.Duration
 	Logf         func(string, ...any)
+	// Replacements 是等长字节替换对（client -> backend 方向）。
+	// 用于在不破坏 WebSocket 帧结构的前提下改写 JSON 字段值。
+	Replacements [][2]string
 
 	mu       sync.Mutex
 	listener net.Listener
@@ -107,7 +110,71 @@ func (p *WSGuardProxy) handleConn(ctx context.Context, clientConn net.Conn) {
 		return
 	}
 
-	RelayTCP(clientConn, backendConn)
+	if len(p.Replacements) == 0 {
+		RelayTCP(clientConn, backendConn)
+		return
+	}
+	relayWithReplace(clientConn, backendConn, p.Replacements)
+}
+
+// relayWithReplace 在 client->backend 方向做等长字节替换后再转发。
+// 等长替换不会改变 WebSocket 帧头里的 payload 长度，因此对分片/掩码安全。
+func relayWithReplace(client, backend net.Conn, pairs [][2]string) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() { // backend -> client 原样
+		defer wg.Done()
+		_, _ = io.Copy(client, backend)
+		if tc, ok := client.(*net.TCPConn); ok {
+			_ = tc.CloseWrite()
+		}
+	}()
+
+	go func() { // client -> backend 替换
+		defer wg.Done()
+		maxLen := 0
+		for _, pr := range pairs {
+			if len(pr[0]) > maxLen {
+				maxLen = len(pr[0])
+			}
+		}
+		buf := make([]byte, 32*1024)
+		carry := make([]byte, 0, maxLen)
+		for {
+			n, err := client.Read(buf)
+			if n > 0 {
+				data := append(carry, buf[:n]...)
+				for _, pr := range pairs {
+					for i := 0; i+len(pr[0]) <= len(data); i++ {
+						if string(data[i:i+len(pr[0])]) == pr[0] {
+							copy(data[i:], pr[1])
+							i += len(pr[1]) - 1
+						}
+					}
+				}
+				// 保留尾部 maxLen-1 字节，避免匹配串被分片截断
+				keep := maxLen - 1
+				if keep > len(data) {
+					keep = len(data)
+				}
+				carry = append(carry[:0], data[len(data)-keep:]...)
+				if _, werr := backend.Write(data[:len(data)-keep]); werr != nil {
+					return
+				}
+			}
+			if err != nil {
+				if len(carry) > 0 {
+					_, _ = backend.Write(carry)
+				}
+				if tc, ok := backend.(*net.TCPConn); ok {
+					_ = tc.CloseWrite()
+				}
+				return
+			}
+		}
+	}()
+	wg.Wait()
 }
 
 // IsWebSocketHandshake returns true if the initial HTTP request headers contain Upgrade: websocket.

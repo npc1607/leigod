@@ -17,6 +17,7 @@ import (
 	"leigod/internal/bridge"
 	"leigod/internal/netns"
 	"leigod/internal/socks5"
+	"leigod/internal/whitelistsrv"
 )
 
 const (
@@ -45,11 +46,48 @@ func (a *App) RunDaemon(ctx context.Context) error {
 		return fmt.Errorf("ensure assets: %w", err)
 	}
 
+	paths := assets.ResolvePaths(a.Cfg.InstallDir)
+
 	nsMgr := netns.NewManager(a.Cfg, a.logf)
 	wan, err := nsMgr.Setup(deviceMAC)
 	if err != nil {
 		return fmt.Errorf("setup network namespace: %w", err)
 	}
+	// 白名单 serve 模式：本地 HTTPS 提供自定义白名单内容
+	var wlPaths whitelistsrv.Paths
+	if a.Cfg.WhitelistMode == "serve" {
+		hostIP, err := a.Cfg.HostVethIP()
+		if err != nil {
+			return err
+		}
+		wlPaths, err = whitelistsrv.EnsureCerts(filepath.Join(paths.RuntimeDir, "mitm"), assets.WhitelistHost)
+		if err != nil {
+			return fmt.Errorf("生成白名单证书失败: %w", err)
+		}
+		if err := whitelistsrv.BuildBundle(wlPaths); err != nil {
+			return fmt.Errorf("生成 CA bundle 失败: %w", err)
+		}
+		if err := assets.WriteFakeHostsFor(filepath.Join(paths.RuntimeDir, "fake_hosts"), hostIP); err != nil {
+			return err
+		}
+		wlSrv := &whitelistsrv.Server{
+			Listen:   net.JoinHostPort(hostIP, "443"),
+			Body:     []byte(a.Cfg.WhitelistBody),
+			CertFile: wlPaths.CertFile,
+			KeyFile:  wlPaths.KeyFile,
+			Logf:     a.logf,
+		}
+		go func() {
+			if err := wlSrv.Start(ctx); err != nil {
+				a.logf("白名单 HTTPS 服务退出: %v", err)
+			}
+		}()
+	} else {
+		if err := assets.WriteFakeHostsFor(filepath.Join(paths.RuntimeDir, "fake_hosts"), ""); err != nil {
+			return err
+		}
+	}
+
 	defer func() {
 		assets.BackupBindingState(a.Cfg.InstallDir, a.Cfg.StateDir)
 		a.logf("cleaning up network namespace %s and host routing rules...", a.Cfg.Namespace)
@@ -83,6 +121,14 @@ func (a *App) RunDaemon(ctx context.Context) error {
 		ListenAddr: fmt.Sprintf("0.0.0.0:%d", a.Cfg.WebPort),
 		TargetAddr: fmt.Sprintf("%s:%d", nsIP, a.Cfg.WebPort),
 		Logf:       a.logf,
+	}
+	if a.Cfg.AccModeOverride >= 0 {
+		target := strconv.Itoa(a.Cfg.AccModeOverride)
+		wsProxy.Replacements = [][2]string{
+			{`"acc_mode":1`, `"acc_mode":` + target},
+			{`"acc_mode":0`, `"acc_mode":` + target},
+		}
+		a.logf("已启用 acc_mode 注入: 手机下发的 acc_mode -> %s", target)
 	}
 	go func() {
 		if err := wsProxy.Start(ctx); err != nil {
@@ -246,6 +292,30 @@ func (a *App) RunNSDaemon(ctx context.Context) error {
 		_ = bindMountFile(paths.ResolvConf, "/etc/resolv.conf")
 	}
 
+	// /etc/hosts：serve 模式下把白名单域名指向宿主机 veth 地址
+	if fakeHosts := filepath.Join(paths.RuntimeDir, "fake_hosts"); fileExistsFn(fakeHosts) {
+		if err := bindMountFile(fakeHosts, "/etc/hosts"); err != nil {
+			a.logf("warning: bind mount /etc/hosts: %v", err)
+		}
+	}
+
+	// CA bundle：把自签 CA 注入，使本地 HTTPS 白名单服务被信任
+	if a.Cfg.WhitelistMode == "serve" {
+		bundle := whitelistsrv.ResolvePaths(filepath.Join(paths.RuntimeDir, "mitm")).Bundle
+		if fileExistsFn(bundle) {
+			for _, dst := range []string{
+				"/etc/ssl/certs/ca-certificates.crt",
+				"/etc/pki/tls/certs/ca-bundle.crt",
+				"/etc/ssl/cert.pem",
+			} {
+				if fileExistsFn(dst) {
+					_ = bindMountFile(bundle, dst)
+				}
+			}
+			a.logf("已注入自签 CA bundle（白名单 serve 模式）")
+		}
+	}
+
 	// 3. Construct isolated /home/deck/leigod and /home/leigod inside a private tmpfs on /home
 	if err := syscall.Mount("tmpfs", "/home", "tmpfs", 0, "mode=0755,size=16m"); err != nil {
 		return fmt.Errorf("mount tmpfs on /home: %w", err)
@@ -259,11 +329,17 @@ func (a *App) RunNSDaemon(ctx context.Context) error {
 		}
 	}
 
-	// 4. Prepare /tmp/acc/log mapped to paths.LogDir
-	if err := os.MkdirAll("/tmp/acc/log", 0o755); err != nil {
-		return fmt.Errorf("mkdir /tmp/acc/log: %w", err)
+	// 4. 把整个 /tmp/acc 暴露到宿主 <runtime>/acc，便于检查 acc-gw 的运行时配置
+	//    （acc_core_conf.json / _acc_conf.json / _acc_data.json）。失败则退化为只暴露 log。
+	accDir := filepath.Join(paths.RuntimeDir, "acc")
+	_ = os.MkdirAll(filepath.Join(accDir, "log"), 0o777)
+	_ = os.MkdirAll("/tmp/acc", 0o777)
+	if err := syscall.Mount(accDir, "/tmp/acc", "", syscall.MS_BIND, ""); err != nil {
+		if err := os.MkdirAll("/tmp/acc/log", 0o755); err != nil {
+			return fmt.Errorf("mkdir /tmp/acc/log: %w", err)
+		}
+		_ = syscall.Mount(paths.LogDir, "/tmp/acc/log", "", syscall.MS_BIND, "")
 	}
-	_ = syscall.Mount(paths.LogDir, "/tmp/acc/log", "", syscall.MS_BIND, "")
 
 	if err := os.Chdir("/home/deck/leigod"); err != nil {
 		return fmt.Errorf("chdir /home/deck/leigod: %w", err)
@@ -388,4 +464,9 @@ func truncateOversizedLogs(logDir string) {
 			_ = os.Truncate(p, 0)
 		}
 	}
+}
+
+func fileExistsFn(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && !st.IsDir()
 }

@@ -133,3 +133,45 @@ sudo ./scripts/verify.sh       # 全链路 10 组检查，输出 PASS/WARN/FAIL 
 
 `acc-gw.router.amd64` 等文件的著作权归雷神所有，使用前请遵守其服务条款。
 本仓库代码仅供学习研究，请遵守当地法律法规。
+
+---
+
+## IP 白名单接管（whitelist_mode: serve）
+
+雷神的加速引擎启动时会下载 `https://dfs01.nn.com/.../pcipwhite.txt`（约 2.5 万条 CIDR），
+并**只加速命中白名单的 IP**。`Path of Exile` 的图内服务器（如 `136.82.122.21`）不在
+该名单内，因此被判为 `go direct`，走 200ms+ 的直连链路。
+
+而 acc-gw 有一条兜底逻辑：
+
+```
+ip(%s) ip whitelist size is zero, use line:%hu, go acc
+```
+
+即**白名单为空时，所有 IP 一律加速**。因此本项目在命名空间内接管该下载：
+
+```
+acc-gw 请求 https://dfs01.nn.com/.../pcipwhite.txt
+  ├─ 命名空间内 /etc/hosts（伪造）: dfs01.nn.com -> 10.254.254.1（宿主机 veth）
+  ├─ 连到本地 HTTPS 服务（自签 CA 签发 dfs01.nn.com 证书）
+  ├─ 命名空间内 /etc/ssl/certs/ca-certificates.crt 已 bind 为「系统 bundle + 自签 CA」
+  └─ 返回 whitelist_body（默认 0 字节）-> "ip whitelist size is zero" -> 全量加速
+```
+
+配置（`/etc/leigod/config.yaml`）：
+
+```yaml
+whitelist_mode: off      # off（默认，不干预）| serve（接管白名单）
+whitelist_body: ""       # serve 模式下返回的内容；空 = 0 字节 = 全量加速
+```
+
+> 注意：不能把该域名解析到 `0.0.0.0` 让下载**失败** —— 雷神会报
+> `load the black white list failed` 并**放弃初始化加速引擎**（不会走兜底）。
+> 必须让下载**成功但内容为空**。
+
+回滚：
+
+```sh
+sudo sed -i 's/^whitelist_mode: serve/whitelist_mode: off/' /etc/leigod/config.yaml
+sudo systemctl restart leigod-isolated
+```

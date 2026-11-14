@@ -32,31 +32,43 @@ type Config struct {
 	DNSServers     []string
 	SkipVerify     bool
 	Purge          bool
+	// WhitelistMode 控制 IP 白名单下载（dfs01.nn.com）的处理方式：
+	//   off   = 不干预（默认，正常工作）
+	//   block = 解析到 0.0.0.0（会让 acc 引擎初始化失败，仅用于诊断）
+	//   serve = 本地 HTTPS 提供自定义白名单内容（WhitelistBody，默认空 → 全量加速）
+	WhitelistMode string
+	// WhitelistBody 是 serve 模式下返回的文件内容；空字符串表示 0 字节（触发
+	// "ip whitelist size is zero -> go acc"）。
+	WhitelistBody string
+	// AccModeOverride >= 0 时，把手机下发的 "acc_mode":N 改写成该值。
+	// 雷神内部只接受 0/1；当前观察到 1 = 智能（只加速白名单），0 疑似全量。
+	AccModeOverride int
 }
 
 // Default returns a Config populated with safe defaults for desktop Linux + Throne/Sing-box coexistence.
 func Default() Config {
 	return Config{
-		InstallDir:     "/opt/leigod",
-		StateDir:       "/var/lib/leigod",
-		Namespace:      "leigod-ns",
-		VethHost:       "leigod-host",
-		VethNS:         "eth0",
-		HostVethCIDR:   "10.254.254.1/24",
-		NSVethCIDR:     "10.254.254.2/24",
-		RouteTable:     2540,
-		RulePref:       90,
-		WANInterface:   "auto",
-		DeviceMAC:      "auto",
-		DeviceIP:       "auto",
-		MirrorURL:      "http://119.3.40.126",
-		WebPort:        5588,
-		DiscoveryPort:  6066,
-		Socks5Listen:   "127.0.0.1:15588",
-		NSSocks5Listen: "10.254.254.2:1080",
-		WebListen:      "127.0.0.1:7788",
-		DNSServers:     []string{"223.5.5.5", "119.29.29.29"},
-		SkipVerify:     false,
+		InstallDir:      "/opt/leigod",
+		StateDir:        "/var/lib/leigod",
+		Namespace:       "leigod-ns",
+		VethHost:        "leigod-host",
+		VethNS:          "eth0",
+		HostVethCIDR:    "10.254.254.1/24",
+		NSVethCIDR:      "10.254.254.2/24",
+		RouteTable:      2540,
+		RulePref:        90,
+		WANInterface:    "auto",
+		DeviceMAC:       "auto",
+		DeviceIP:        "auto",
+		MirrorURL:       "http://119.3.40.126",
+		WebPort:         5588,
+		DiscoveryPort:   6066,
+		Socks5Listen:    "127.0.0.1:15588",
+		NSSocks5Listen:  "10.254.254.2:1080",
+		WebListen:       "127.0.0.1:7788",
+		DNSServers:      []string{"223.5.5.5", "119.29.29.29"},
+		SkipVerify:      false,
+		AccModeOverride: -1,
 	}
 }
 
@@ -217,6 +229,16 @@ func LoadYAMLFile(path string, cfg *Config) error {
 			if len(servers) > 0 {
 				cfg.DNSServers = servers
 			}
+		case "whitelist_mode":
+			cfg.WhitelistMode = val
+		case "whitelist_body":
+			cfg.WhitelistBody = val
+		case "acc_mode_override":
+			v, err := strconv.Atoi(val)
+			if err != nil {
+				return fmt.Errorf("%s:%d: invalid acc_mode_override %q: %w", path, lineNo, val, err)
+			}
+			cfg.AccModeOverride = v
 		case "skip_verify":
 			b, err := strconv.ParseBool(val)
 			if err != nil {
